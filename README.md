@@ -23,7 +23,7 @@ contains a complete, checkpointed setup prompt.
 | Piece | File | Why |
 |---|---|---|
 | **MCU reset at close patch** | `patches/mcu-reset-at-close.patch` | The stock driver resets only the *sensor* when a session ends. After an **aborted session** (user gives up tapping and types the password → greeter cancels the verify → TLS stream torn down mid-flight) the MCU stays in a dirty state: it still answers commands, but every frame of the *next* session is garbage (match score 0–10 across all templates). The patch sends a **full soft MCU reset (cmd 0xa2, bits 0b011)** on device close, so every session starts with a pristine sensor — like after hibernation. Without it the lock screen fails exactly *after* the first failed/unlock-by-password attempt, forever. |
-| **PAM overrides** | `pam/kde`, `pam/kde-fingerprint` | Two Plasma-greeter bugs: (1) `pam_kwallet5` in the `kde-fingerprint` stack asks for a **password after a successful fingerprint match**, and the greeter hangs in a nested event loop — fingerprint unlock is then impossible at all; (2) `pam_fprintd` present in *both* the interactive `kde` stack and `kde-fingerprint` makes two PAM stacks race for the device and the fingerprint stack dies instantly. |
+| **PAM overrides** | `pam/kde`, `pam/kde-fingerprint`, `pam/sddm` | Plasma greeter and SDDM bugs: (1) `pam_kwallet5` in fingerprint-first stacks (`kde-fingerprint`, `sddm`) asks for a **password after a successful fingerprint match**, and the greeter/DM then blocks — fingerprint-only login is impossible; (2) `pam_fprintd` present in *both* the interactive `kde` stack and `kde-fingerprint` makes two PAM stacks race for the device and the fingerprint stack dies instantly; (3) stock SDDM stacks get `pam_fprintd` via `common-auth` with `max-tries=1 timeout=10` and no UI hint — the finger window opens only when the user submits the field, so early touches are lost. |
 | **Recovery script** | `scripts/fix-sensor.sh` | When the sensor stops ACKing entirely (`Open failed: Command timed out: 0x96`) after a hard abort, a software MCU reset revives it. |
 | **Submodules** | `driver/`, `vendor/goodix-fp-dump` | The TOD driver and the Python USB transport used for one-time PSK provisioning. |
 
@@ -96,17 +96,43 @@ sudo pam-auth-update --enable fprintd
 
 # Plasma lock screen overrides (Ubuntu 26.04 keeps stock files in /usr/lib/pam.d,
 # local files in /etc/pam.d win)
-sudo cp ../pam/kde /etc/pam.d/kde
-sudo cp ../pam/kde-fingerprint /etc/pam.d/kde-fingerprint
+sudo cp pam/kde /etc/pam.d/kde
+sudo cp pam/kde-fingerprint /etc/pam.d/kde-fingerprint
+
+# SDDM login screen (skip if you stay on gdm3)
+sudo cp pam/sddm /etc/pam.d/sddm
 ```
 
-The two rules encoded in these files:
+The rules encoded in these files:
 * `kde` (interactive/password stack): **no** `pam_fprintd` — otherwise it races
   with the fingerprint stack for the device;
 * `kde-fingerprint`: `pam_fprintd.so max_tries=5 timeout=60` and **no**
   `pam_kwallet5` — otherwise a password prompt follows a successful match and
   the greeter hangs. KWallet simply stays locked on fingerprint unlocks
   (it unlocks on password logins as before).
+* `sddm` (login screen, **only if SDDM is your display manager**): inlines
+  `common-auth` with `pam_fprintd.so max_tries=3 timeout=30` (30 s window,
+  3 tries) and **no `pam_kwallet5` in the auth phase** — otherwise the same
+  password-prompt-after-match hang. Session `pam_kwallet5 auto_start` stays
+  (it just starts kwalletd locked).
+
+### 5a. Using SDDM instead of GDM (optional)
+
+Ubuntu may default to `gdm3` even on KDE installs. To switch:
+
+```bash
+sudo apt install sddm kde-config-sddm          # usually already there
+echo sddm shared/default-x-display-manager select sddm | sudo debconf-set-selections
+echo /usr/bin/sddm | sudo tee /etc/X11/default-display-manager
+sudo systemctl disable gdm3 gdm 2>/dev/null; sudo rm -f /etc/systemd/system/display-manager.service
+sudo systemctl enable sddm
+sudo reboot
+```
+
+SDDM UX notes: the stock themes show **no fingerprint hint** — the finger
+window opens when you **submit the (possibly empty) password field once**;
+then touch the sensor within 30 s. Theme/HiDPI are configured in *System
+Settings → Colors & Themes → Login Screen*.
 
 ### 6. Enroll and test
 
@@ -128,6 +154,9 @@ why this needed the patch and PAM surgery, see
 | Lock screen shows “failed to match fingerprint” instantly | two `pam_fprintd` instances racing | install `pam/kde` override |
 | Fingerprint matches (fprintd log) but screen stays locked | kwallet password prompt inside the fingerprint stack | install `pam/kde-fingerprint` override |
 | Lock screen works right after boot/hibernate, then never | dirty MCU after an aborted session | apply `patches/mcu-reset-at-close.patch` |
+| SDDM: fingerprint matched (fprintd log) but login doesn't complete | kwallet password prompt inside the sddm stack | install `pam/sddm` override |
+| SDDM: touches do nothing | finger window not open — it starts on field submit | press Enter on the empty password field, then touch (≤30 s) |
+| SDDM: huge on-screen keyboard covers the greeter | `budgie-sddm-theme` package forces `InputMethod=qtvirtualkeyboard` in `/etc/sddm.conf.d/50-ubuntu-budgie.conf` for every theme | `sudo apt remove budgie-sddm-theme` (KDE machines don't need it) or override `InputMethod=` empty in a lexically later conf file |
 | Enrollment registers no touches | finger already on sensor while the driver takes its baseline | lift the finger, restart `fprintd-enroll`, wait for the prompt, then touch |
 | dmesg: `usbfs: process fprintd did not claim interface 1 before use` | driver uses the sensor's data interface without claiming | benign, ignore |
 | Frames match weakly (score ≈ threshold 20) | quick taps / partial contact | press firmly ~1 s; driver re-captures within the window |

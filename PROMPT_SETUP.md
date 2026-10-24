@@ -111,6 +111,8 @@ hangs or later `Open failed: Command timed out: 0x96` appears — run
 sudo pam-auth-update --enable fprintd
 sudo cp ../pam/kde /etc/pam.d/kde
 sudo cp ../pam/kde-fingerprint /etc/pam.d/kde-fingerprint
+# SDDM as display manager (skip if the machine uses gdm3/lightdm):
+sudo cp ../pam/sddm /etc/pam.d/sddm
 ```
 
 Rules (distro-adapt as needed, keep the semantics):
@@ -126,9 +128,15 @@ Rules (distro-adapt as needed, keep the semantics):
    `/etc/pam.d` override them. Verify with:
    `grep -n pam_fprintd /etc/pam.d/kde` → no match;
    `grep -n pam_fprintd /etc/pam.d/kde-fingerprint` → exactly one auth line.
-4. If `/etc/pam.d/kde` already exists (non-stock), diff first; base the
-   override on the machine's own stock file, removing only fprintd/kwallet5
-   as per rules 1–2. Back up anything you overwrite (`.orig.bak`).
+4. If SDDM is the display manager, install `pam/sddm` too: it inlines
+   common-auth with `pam_fprintd.so max_tries=3 timeout=30` and REMOVES the
+   auth-phase `pam_kwallet5` (it prompts for a password after a successful
+   match and the login never completes). Verify:
+   `grep -c '^-auth.*kwallet' /etc/pam.d/sddm` → 0.
+5. If `/etc/pam.d/kde` (or `sddm`) already exists (non-stock), diff first; base
+   the override on the machine's own stock file, removing only
+   fprintd/kwallet5 as per the rules. Back up anything you overwrite
+   (`.orig.bak`).
 
 ## STEP 6 — ENROLL (user interaction!)
 
@@ -167,6 +175,12 @@ loginctl lock-session                            # user unlocks by fingerprint a
 
 Gate 7.4 passed if the second lock screen still unlocks by fingerprint.
 
+Gate 7.5 (SDDM login screen, only if SDDM is the display manager): user logs
+out (not reboot), at the SDDM screen presses Enter once on the EMPTY password
+field (this opens the 30 s finger window — themes show no hint!), then touches
+the sensor until login. Gate passed if Plasma starts WITHOUT a password being
+typed. Verify in `journalctl -u fprintd --since '-3 min'`: `verify-match`.
+
 ## STEP 8 — CLEANUP
 
 - Remove any fprintd debug override:
@@ -180,6 +194,8 @@ Gate 7.4 passed if the second lock screen still unlocks by fingerprint.
 | `Open failed: Command timed out: 0x96` | `../scripts/fix-sensor.sh` |
 | Lock screen: instant «failed to match» | `pam/kde` override missing pam_fprintd-removal → re-do STEP 5 |
 | Match in fprintd log, screen stays locked | kwallet still in `kde-fingerprint` → re-do STEP 5 |
+| SDDM: match in fprintd log, login never completes | kwallet auth line still in `sddm` stack → re-do STEP 5 (pam/sddm) |
+| SDDM: touches do nothing | finger window opens only after field submit → press Enter on empty field, then touch ≤30 s |
 | Works after boot/hibernate only | mcu-reset patch not applied/built → re-do STEP 3 |
 | Enroll: no touches registered | finger was on sensor at start → restart enroll, wait for prompt |
 | dmesg `did not claim interface 1 before use` | benign, ignore |
