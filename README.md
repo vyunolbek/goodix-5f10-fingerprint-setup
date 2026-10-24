@@ -129,10 +129,14 @@ sudo systemctl enable sddm
 sudo reboot
 ```
 
-SDDM UX notes: the stock themes show **no fingerprint hint** — the finger
-window opens when you **submit the (possibly empty) password field once**;
-then touch the sensor within 30 s. Theme/HiDPI are configured in *System
-Settings → Colors & Themes → Login Screen*.
+SDDM UX notes: the stock themes show **no fingerprint hint** and breeze does not
+submit an **empty** field — the finger window opens only after you submit a
+**non-empty** password field. Practical recipe: type **any character**, press
+Enter, then touch the sensor within 30 s (the real password is not even
+checked when the finger matches). Submitting the real password also opens the
+finger window first; without a touch the password is checked after the window
+closes. Theme/HiDPI are configured in *System Settings → Colors & Themes →
+Login Screen*.
 
 ### 6. Enroll and test
 

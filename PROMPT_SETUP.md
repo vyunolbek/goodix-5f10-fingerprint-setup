@@ -176,10 +176,11 @@ loginctl lock-session                            # user unlocks by fingerprint a
 Gate 7.4 passed if the second lock screen still unlocks by fingerprint.
 
 Gate 7.5 (SDDM login screen, only if SDDM is the display manager): user logs
-out (not reboot), at the SDDM screen presses Enter once on the EMPTY password
-field (this opens the 30 s finger window — themes show no hint!), then touches
-the sensor until login. Gate passed if Plasma starts WITHOUT a password being
-typed. Verify in `journalctl -u fprintd --since '-3 min'`: `verify-match`.
+out (not reboot), at the SDDM screen types ANY character into the password
+field and presses Enter (breeze does not submit an empty field — without a
+submit no PAM cycle runs and touches go nowhere!), then touches the sensor
+until login. Gate passed if Plasma starts WITHOUT the real password being
+used. Verify in `journalctl -u fprintd --since '-3 min'`: `verify-match`.
 
 ## STEP 8 — CLEANUP
 
@@ -195,7 +196,7 @@ typed. Verify in `journalctl -u fprintd --since '-3 min'`: `verify-match`.
 | Lock screen: instant «failed to match» | `pam/kde` override missing pam_fprintd-removal → re-do STEP 5 |
 | Match in fprintd log, screen stays locked | kwallet still in `kde-fingerprint` → re-do STEP 5 |
 | SDDM: match in fprintd log, login never completes | kwallet auth line still in `sddm` stack → re-do STEP 5 (pam/sddm) |
-| SDDM: touches do nothing | finger window opens only after field submit → press Enter on empty field, then touch ≤30 s |
+| SDDM: touches do nothing | finger window opens only after a non-empty field submit (breeze ignores empty submit) | type any character + Enter, then touch ≤30 s |
 | Works after boot/hibernate only | mcu-reset patch not applied/built → re-do STEP 3 |
 | Enroll: no touches registered | finger was on sensor at start → restart enroll, wait for prompt |
 | dmesg `did not claim interface 1 before use` | benign, ignore |
