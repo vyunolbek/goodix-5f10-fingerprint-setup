@@ -1,0 +1,28 @@
+#%PAM-1.0
+# Локальный override /usr/lib/pam.d/kde — интерактивный (парольный) стек
+# локскрина Plasma. Отличие от штатного: из auth-цепочки убран pam_fprintd.
+# Причина: гритер Plasma запускает параллельно non-interactive стек
+# kde-fingerprint; два pam_fprintd конфликтуют за устройство fprintd,
+# и стек отпечатка падает мгновенно («Failed to match fingerprint»).
+# Отпечаток на локскрине обслуживает ТОЛЬКО /etc/pam.d/kde-fingerprint.
+auth	requisite	pam_nologin.so
+auth	required	pam_succeed_if.so user != root quiet_success
+# --- содержимое common-auth БЕЗ pam_fprintd (см. /etc/pam.d/common-auth) ---
+auth	[success=2 default=ignore]	pam_unix.so nullok try_first_pass
+auth	[success=1 default=ignore]	pam_sss.so use_first_pass
+auth	requisite			pam_deny.so
+auth	required			pam_permit.so
+auth	optional			pam_cap.so
+# --- конец common-auth ---
+auth	optional	pam_kwallet5.so
+@include common-account
+session [success=ok ignore=ignore module_unknown=ignore default=bad]	pam_selinux.so close
+session required	pam_loginuid.so
+session [success=ok ignore=ignore module_unknown=ignore default=bad]	pam_selinux.so open
+session optional	pam_keyinit.so force revoke
+session required	pam_limits.so
+session required	pam_env.so readenv=1
+session required	pam_env.so readenv=1 envfile=/etc/default/locale
+@include common-session
+session optional	pam_kwallet5.so auto_start
+@include common-password

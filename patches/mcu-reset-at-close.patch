@@ -1,0 +1,70 @@
+diff --git a/src/goodix.c b/src/goodix.c
+index 236589f..e05ec1a 100644
+--- a/src/goodix.c
++++ b/src/goodix.c
+@@ -952,6 +952,32 @@ goodix_send_reset (FpDevice *dev, gboolean reset_sensor, guint8 sleep_time,
+                         NULL);
+ }
+ 
++void
++goodix_send_mcu_reset (FpDevice *dev)
++{
++  // Полный soft-reset MCU (0b011) одним синхронным bulk-write: без ACK-
++  // механизма (после сброса устройство переподключается к шине — ответа
++  // не будет, а read-loop к этому моменту уже останавливается).
++  GoodixReset payload = {.reset_sensor = TRUE,
++                         .soft_reset_mcu = TRUE,
++                         .sleep_time = 20};
++  guint8 *data;
++  guint32 data_len;
++  GError *error = NULL;
++
++  goodix_encode_protocol (GOODIX_CMD_RESET, (guint8 *) &payload,
++                          sizeof (payload), TRUE, FALSE, &data, &data_len);
++  if (!goodix_send_pack (dev, GOODIX_FLAGS_MSG_PROTOCOL, data, data_len,
++                         g_free, &error))
++    {
++      fp_dbg ("MCU reset at close failed: %s",
++              error ? error->message : "write failed");
++      g_clear_error (&error);
++    }
++  else
++    fp_dbg ("MCU reset at close sent (sensor+MCU, 0b011)");
++}
++
+ void
+ goodix_send_query_firmware_version (FpDevice                     *dev,
+                                     GoodixFirmwareVersionCallback callback,
+@@ -1200,6 +1226,13 @@ goodix_dev_deinit (FpDevice *dev, GError **error)
+   g_cancellable_cancel (priv->transfer_cancel_tkn);
+   goodix_shutdown_tls (dev, error);
+ 
++  // Ключевой фикс «грязного» сенсора: после оборванных сессий (отмена verify,
++  // смерть клиента, suspend с открытым claim) MCU остаётся в плохом состоянии
++  // — сенсор отвечает на команды, но кадры следующей сессии нераспознаваемы
++  // (score 0-10 по всем шаблонам). Полный сброс MCU при закрытии гарантирует
++  // каждой следующей сессии чистый сенсор — как после гибернации/fix-sensor.
++  goodix_send_mcu_reset (dev);
++
+   goodix_reset_state (dev);
+   priv->inited = FALSE;
+ 
+diff --git a/src/goodix.h b/src/goodix.h
+index 08bc254..22bcd77 100644
+--- a/src/goodix.h
++++ b/src/goodix.h
+@@ -394,6 +394,14 @@ void goodix_send_reset (FpDevice           *dev,
+                         GoodixResetCallback callback,
+                         gpointer            user_data);
+ 
++/**
++ * @brief Полный soft-reset (сенсор + MCU, биты 0b011) одним синхронным write.
++ *
++ * Fire-and-forget без ожидания ACK: после этой команды MCU перезагружается
++ * и устройство переподключается к шине (ответа не будет и не надо).
++ */
++void goodix_send_mcu_reset (FpDevice *dev);
++
+ /**
+  * @brief Ask the device what firmware version it is running. Response is null-terminated string
+  *

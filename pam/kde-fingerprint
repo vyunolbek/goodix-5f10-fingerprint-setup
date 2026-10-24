@@ -1,0 +1,16 @@
+#%PAM-1.0
+# Локальный override /usr/lib/pam.d/kde-fingerprint — стек отпечатка локскрина.
+# timeout=60: окно касания 60 с с момента появления экрана блокировки.
+auth	requisite	pam_nologin.so
+auth	required	pam_succeed_if.so user != root quiet_success
+auth	required	pam_fprintd.so max_tries=5 timeout=60
+@include common-account
+session [success=ok ignore=ignore module_unknown=ignore default=bad]	pam_selinux.so close
+session required	pam_loginuid.so
+session [success=ok ignore=ignore module_unknown=ignore default=bad]	pam_selinux.so open
+session optional	pam_keyinit.so force revoke
+session required	pam_limits.so
+session required	pam_env.so readenv=1
+session required	pam_env.so readenv=1 envfile=/etc/default/locale
+@include common-session
+password required	pam_fprintd.so

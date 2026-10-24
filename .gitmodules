@@ -1,0 +1,6 @@
+[submodule "driver"]
+	path = driver
+	url = https://github.com/levantez/goodix-5f10-linux-driver
+[submodule "vendor/goodix-fp-dump"]
+	path = vendor/goodix-fp-dump
+	url = https://github.com/goodix-fp-linux-dev/goodix-fp-dump.git
