@@ -180,6 +180,12 @@ loginctl lock-session                            # user unlocks by fingerprint a
 
 Gate 7.4 passed if the second lock screen still unlocks by fingerprint.
 
+The patch resets the MCU only after DIRTY sessions (error/cancel). A clean
+verify ends with `clean session — MCU reset skipped` (visible with fprintd
+debug on) and NO USB re-enumeration in `journalctl -k`. Unconditional resets
+are wrong: they churn fprintd device paths (`/Device/N`) and trigger
+`Object does not exist at path …` races in concurrent clients.
+
 STEP 5a — SDDM PARALLEL FINGERPRINT (optional but recommended; skip if gdm3)
 
 Stock SDDM cannot listen for the fingerprint before the user submits the

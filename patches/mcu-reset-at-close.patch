@@ -1,8 +1,16 @@
 diff --git a/src/goodix.c b/src/goodix.c
-index 236589f..e05ec1a 100644
+index 236589f..93b38d7 100644
 --- a/src/goodix.c
 +++ b/src/goodix.c
-@@ -952,6 +952,32 @@ goodix_send_reset (FpDevice *dev, gboolean reset_sensor, guint8 sleep_time,
+@@ -57,6 +57,7 @@ typedef struct
+ 
+   GCancellable       *transfer_cancel_tkn;
+   gboolean            inited;
++  gboolean            session_dirty;
+ } FpiDeviceGoodixTlsPrivate;
+ 
+ G_DEFINE_ABSTRACT_TYPE_WITH_PRIVATE (FpiDeviceGoodixTls, fpi_device_goodixtls,
+@@ -952,6 +953,43 @@ goodix_send_reset (FpDevice *dev, gboolean reset_sensor, guint8 sleep_time,
                          NULL);
  }
  
@@ -32,28 +40,46 @@ index 236589f..e05ec1a 100644
 +    fp_dbg ("MCU reset at close sent (sensor+MCU, 0b011)");
 +}
 +
++// Пометить сессию как «грязную» (отмена/ошибка/таймаут): при закрытии будет
++// отправлен полный сброс MCU. Вызывается из TOD-модуля в путях ошибок.
++void
++goodix_tls_mark_session_dirty (FpDevice *dev)
++{
++  FpiDeviceGoodixTls *self = FPI_DEVICE_GOODIXTLS (dev);
++  FpiDeviceGoodixTlsPrivate *priv =
++    fpi_device_goodixtls_get_instance_private (self);
++  priv->session_dirty = TRUE;
++}
++
  void
  goodix_send_query_firmware_version (FpDevice                     *dev,
                                      GoodixFirmwareVersionCallback callback,
-@@ -1200,6 +1226,13 @@ goodix_dev_deinit (FpDevice *dev, GError **error)
+@@ -1200,6 +1238,20 @@ goodix_dev_deinit (FpDevice *dev, GError **error)
    g_cancellable_cancel (priv->transfer_cancel_tkn);
    goodix_shutdown_tls (dev, error);
  
-+  // Ключевой фикс «грязного» сенсора: после оборванных сессий (отмена verify,
-+  // смерть клиента, suspend с открытым claim) MCU остаётся в плохом состоянии
-+  // — сенсор отвечает на команды, но кадры следующей сессии нераспознаваемы
-+  // (score 0-10 по всем шаблонам). Полный сброс MCU при закрытии гарантирует
-+  // каждой следующей сессии чистый сенсор — как после гибернации/fix-sensor.
-+  goodix_send_mcu_reset (dev);
++  // Сброс MCU — только после «грязных» сессий (отмена verify, смерть клиента,
++  // suspend с открытым claim): тогда MCU остаётся в плохом состоянии и кадры
++  // следующей сессии нераспознаваемы (score 0-10 по всем шаблонам).
++  // Чистые сессии НЕ сбрасываем: постоянная переэнумерация USB пересоздаёт
++  // объект fprintd с новым путём /Device/N и порождает гонки клиентов
++  // («Object does not exist at path …», «Device was already claimed»).
++  if (priv->session_dirty)
++    {
++      goodix_send_mcu_reset (dev);
++      priv->session_dirty = FALSE;
++    }
++  else
++    fp_dbg ("clean session — MCU reset skipped");
 +
    goodix_reset_state (dev);
    priv->inited = FALSE;
  
 diff --git a/src/goodix.h b/src/goodix.h
-index 08bc254..22bcd77 100644
+index 08bc254..3042a40 100644
 --- a/src/goodix.h
 +++ b/src/goodix.h
-@@ -394,6 +394,14 @@ void goodix_send_reset (FpDevice           *dev,
+@@ -394,6 +394,18 @@ void goodix_send_reset (FpDevice           *dev,
                          GoodixResetCallback callback,
                          gpointer            user_data);
  
@@ -65,6 +91,64 @@ index 08bc254..22bcd77 100644
 + */
 +void goodix_send_mcu_reset (FpDevice *dev);
 +
++// Пометить текущую сессию как завершившуюся с ошибкой/отменой:
++// при закрытии устройства будет отправлен полный сброс MCU (см. goodix_dev_deinit).
++void goodix_tls_mark_session_dirty (FpDevice *dev);
++
  /**
   * @brief Ask the device what firmware version it is running. Response is null-terminated string
   *
+diff --git a/src/goodix5f10.c b/src/goodix5f10.c
+index 46b55a0..6f4a35c 100644
+--- a/src/goodix5f10.c
++++ b/src/goodix5f10.c
+@@ -479,7 +479,14 @@ tls_ready (FpDevice *dev, gpointer user_data, GError *err)
+ static void
+ act_complete (FpiSsm *ssm, FpDevice *dev, GError *err)
+ {
+-  if (err) { fpi_device_open_complete (dev, err); return; }
++  if (err)
++    {
++      // активация/TLS упала — сенсор в неизвестном состоянии, следующий заход
++      // должен начаться со сброса MCU
++      goodix_tls_mark_session_dirty (dev);
++      fpi_device_open_complete (dev, err);
++      return;
++    }
+   goodix_tls_init (dev, tls_ready, NULL);
+ }
+ 
+@@ -522,9 +529,15 @@ static void
+ enroll_capture_cb (FpDevice *dev, GError *err)
+ {
+   FpiDeviceGoodixTls5f10 *self = FPI_DEVICE_GOODIXTLS5F10 (dev);
+-  if (err) { fpi_device_enroll_complete (dev, NULL, err); return; }
++  if (err)
++    {
++      goodix_tls_mark_session_dirty (dev);
++      fpi_device_enroll_complete (dev, NULL, err);
++      return;
++    }
+   if (fpi_device_action_is_cancelled (dev))
+     {
++      goodix_tls_mark_session_dirty (dev);
+       fpi_device_enroll_complete (dev, NULL,
+         fpi_device_error_new (FP_DEVICE_ERROR_GENERAL));
+       return;
+@@ -593,7 +606,15 @@ static void
+ verify_capture_cb (FpDevice *dev, GError *err)
+ {
+   FpiDeviceGoodixTls5f10 *self = FPI_DEVICE_GOODIXTLS5F10 (dev);
+-  if (err) { fpi_device_verify_complete (dev, err); return; }
++  if (err)
++    {
++      // отмена (пользователь ушёл на пароль, клиент умер) или сбой — сенсор
++      // после этого отдаёт мусорные кадры, сбрасываем MCU при закрытии.
++      // Чистый no-match сюда НЕ попадает: err == NULL.
++      goodix_tls_mark_session_dirty (dev);
++      fpi_device_verify_complete (dev, err);
++      return;
++    }
+ 
+   fpi_device_verify_report (dev,
+     self->cap_matched ? FPI_MATCH_SUCCESS : FPI_MATCH_FAIL, NULL, NULL);
