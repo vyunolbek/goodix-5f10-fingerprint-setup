@@ -1,0 +1,25 @@
+#%PAM-1.0
+# Параллельный вход по отпечатку для sddm-fp (sddm PR #2176, сборка +fp1).
+# Демон sddm стартует этот сервис с пустым паролем при подключении гритера
+# и перезапускает после неудачного ввода пароля. Пароль здесь не спрашивают
+# никогда: только палец.
+
+auth    requisite       pam_nologin.so
+auth    required        pam_succeed_if.so user != root quiet_success
+auth    sufficient      pam_fprintd.so max_tries=3 timeout=30
+auth    requisite       pam_deny.so
+auth    required        pam_permit.so
+
+@include common-account
+
+session [success=ok ignore=ignore module_unknown=ignore default=bad] pam_selinux.so close
+session optional        pam_keyinit.so force revoke
+session required        pam_limits.so
+session required        pam_loginuid.so
+@include common-session
+session [success=ok ignore=ignore module_unknown=ignore default=bad] pam_selinux.so open
+-session optional       pam_gnome_keyring.so auto_start
+-session optional       pam_kwallet5.so auto_start
+
+session required        pam_env.so
+session required        pam_env.so envfile=/etc/default/locale user_readenv=1

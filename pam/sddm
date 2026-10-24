@@ -3,17 +3,20 @@
 # Отличия: 1) убран auth-pam_kwallet5 — после успешного pam_fprintd он
 # запрашивал пароль, и вход пальцем не завершался. Плата: KWallet не
 # разблокируется автоматически при входе (пальцем И паролем).
-# 2) pam_fprintd расширен до max_tries=3 timeout=30.
+# 2) pam_fprintd УБРАН из этого стека: палец обрабатывает параллельный
+# сервис sddm-fingerprint (сборка sddm +fp1, PR #2176); пароль — мгновенно.
 
 # Block login if they are globally disabled
 auth    requisite       pam_nologin.so
 auth    required        pam_succeed_if.so user != root quiet_success
 
 # auth    sufficient      pam_succeed_if.so user ingroup nopasswdlogin
-# --- common-auth (инлайн) с расширенным pam_fprintd: в стоке 1 попытка/10 с,
+# --- common-auth (инлайн), порядок ПАРОЛЬ-ПЕРЕД-ПАЛЬЦЕМ: верный пароль
+# проверяется мгновенно без окна пальца; пустой авто-submit темы проваливается
+# на pam_unix и попадает в окно pam_fprintd; nullok убран (пустой пароль не
+# принимается никогда). В стоке был pam_fprintd первым с 1 попыткой/10 с,
 # тема SDDM не подсвечивает окно пальца — касания мимо окна уходили в пустоту
-auth	[success=3 default=ignore]	pam_fprintd.so max_tries=3 timeout=30
-auth	[success=2 default=ignore]	pam_unix.so nullok try_first_pass
+auth	[success=2 default=ignore]	pam_unix.so try_first_pass
 auth	[success=1 default=ignore]	pam_sss.so use_first_pass
 auth	requisite			pam_deny.so
 auth	required			pam_permit.so

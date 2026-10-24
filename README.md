@@ -23,7 +23,8 @@ contains a complete, checkpointed setup prompt.
 | Piece | File | Why |
 |---|---|---|
 | **MCU reset at close patch** | `patches/mcu-reset-at-close.patch` | The stock driver resets only the *sensor* when a session ends. After an **aborted session** (user gives up tapping and types the password → greeter cancels the verify → TLS stream torn down mid-flight) the MCU stays in a dirty state: it still answers commands, but every frame of the *next* session is garbage (match score 0–10 across all templates). The patch sends a **full soft MCU reset (cmd 0xa2, bits 0b011)** on device close, so every session starts with a pristine sensor — like after hibernation. Without it the lock screen fails exactly *after* the first failed/unlock-by-password attempt, forever. |
-| **PAM overrides** | `pam/kde`, `pam/kde-fingerprint`, `pam/sddm` | Plasma greeter and SDDM bugs: (1) `pam_kwallet5` in fingerprint-first stacks (`kde-fingerprint`, `sddm`) asks for a **password after a successful fingerprint match**, and the greeter/DM then blocks — fingerprint-only login is impossible; (2) `pam_fprintd` present in *both* the interactive `kde` stack and `kde-fingerprint` makes two PAM stacks race for the device and the fingerprint stack dies instantly; (3) stock SDDM stacks get `pam_fprintd` via `common-auth` with `max-tries=1 timeout=10` and no UI hint — the finger window opens only when the user submits the field, so early touches are lost. |
+| **PAM overrides** | `pam/kde`, `pam/kde-fingerprint`, `pam/sddm`, `pam/sddm-fingerprint` | Plasma greeter and SDDM bugs: (1) `pam_kwallet5` in fingerprint-first stacks (`kde-fingerprint`, `sddm`) asks for a **password after a successful fingerprint match**, and the greeter/DM then blocks — fingerprint-only login is impossible; (2) `pam_fprintd` present in *both* the interactive `kde` stack and `kde-fingerprint` makes two PAM stacks race for the device and the fingerprint stack dies instantly; (3) stock SDDM stacks get `pam_fprintd` via `common-auth` with `max-tries=1 timeout=10` and no UI hint — the finger window opens only when the user submits the field, so early touches are lost. |
+| **SDDM fork (+fp1)** | `sddm/pr2176-fingerprint-parallel-auth.patch`, `scripts/build-sddm-fp.sh` | Local sddm build with upstream PR #2176: the daemon polls the fingerprint through a parallel `sddm-fingerprint` service from the moment the greeter appears — finger or password at any time, nothing blocked (see `sddm/README.md`). |
 | **Recovery script** | `scripts/fix-sensor.sh` | When the sensor stops ACKing entirely (`Open failed: Command timed out: 0x96`) after a hard abort, a software MCU reset revives it. |
 | **Submodules** | `driver/`, `vendor/goodix-fp-dump` | The TOD driver and the Python USB transport used for one-time PSK provisioning. |
 
@@ -129,14 +130,39 @@ sudo systemctl enable sddm
 sudo reboot
 ```
 
-SDDM UX notes: the stock themes show **no fingerprint hint** and breeze does not
-submit an **empty** field — the finger window opens only after you submit a
-**non-empty** password field. Practical recipe: type **any character**, press
-Enter, then touch the sensor within 30 s (the real password is not even
-checked when the finger matches). Submitting the real password also opens the
-finger window first; without a touch the password is checked after the window
-closes. Theme/HiDPI are configured in *System Settings → Colors & Themes →
-Login Screen*.
+### 5b. Parallel fingerprint + password at the SDDM screen (recommended)
+
+Stock SDDM starts PAM only when the password field is submitted, so the sensor
+cannot be listening when the greeter appears (open upstream since 2014:
+sddm#284, sddm#1473). The fix is a small local build of sddm with upstream PR
+**sddm/sddm#2176** — the daemon polls the fingerprint for the last logged-in
+user through a parallel `sddm-fingerprint` PAM service from the moment the
+login screen appears. Result is Windows-like:
+
+| Action | Result |
+|---|---|
+| Touch the sensor | instant login, no keypresses, nothing blocked |
+| Type password + Enter | instant login (polling stops, `pam_unix` only) |
+| Wrong password | fingerprint polling restarts automatically |
+
+```bash
+./scripts/build-sddm-fp.sh                        # builds sddm_<ver>+fp1_amd64.deb
+sudo apt install ~/sddm-fp-build/sddm_*+fp1_amd64.deb
+sudo apt-mark hold sddm                           # keep updates from overwriting it
+sudo cp pam/sddm-fingerprint /etc/pam.d/sddm-fingerprint
+sudo cp pam/sddm /etc/pam.d/sddm                  # password-only stack (no pam_fprintd)
+sudo reboot
+```
+
+Full details (PAM layout, rollback, maintenance): see `sddm/README.md`.
+Rollback at any time: `sudo sddm-fp-rollback` (TTY: Ctrl+Alt+F3).
+
+**Fallback without a custom build (stock sddm):** stock themes show no
+fingerprint hint and breeze does not submit an **empty** field — the finger
+window opens only after you submit a **non-empty** field. Recipe: type **any
+character**, press Enter, then touch within 30 s (the password is not even
+checked when the finger matches). Theme/HiDPI are configured in *System
+Settings → Colors & Themes → Login Screen*.
 
 ### 6. Enroll and test
 
@@ -159,7 +185,7 @@ why this needed the patch and PAM surgery, see
 | Fingerprint matches (fprintd log) but screen stays locked | kwallet password prompt inside the fingerprint stack | install `pam/kde-fingerprint` override |
 | Lock screen works right after boot/hibernate, then never | dirty MCU after an aborted session | apply `patches/mcu-reset-at-close.patch` |
 | SDDM: fingerprint matched (fprintd log) but login doesn't complete | kwallet password prompt inside the sddm stack | install `pam/sddm` override |
-| SDDM: touches do nothing | finger window not open — it starts only after a non-empty field submit (breeze ignores empty submits) | type any character + Enter, then touch (≤30 s) |
+| SDDM: touches do nothing (stock sddm, no fork) | finger window not open — it starts only after a non-empty field submit (breeze ignores empty submits); stock SDDM even drops a Login sent during an active auth | build the +fp1 fork (5b) — or type any character + Enter, then touch (≤30 s) |
 | SDDM: huge on-screen keyboard covers the greeter | `budgie-sddm-theme` package forces `InputMethod=qtvirtualkeyboard` in `/etc/sddm.conf.d/50-ubuntu-budgie.conf` for every theme | `sudo apt remove budgie-sddm-theme` (KDE machines don't need it) or override `InputMethod=` empty in a lexically later conf file |
 | SDDM: plain white unstyled screen ("no theme at all") | the chosen theme is Qt5-era — SDDM 0.21 greeter is Qt6 and `import QtQuick.Controls 1.x` no longer exists; SDDM silently falls back to the embedded theme (WhiteSur and many other popular themes are affected) | install a Qt6 theme (`sudo apt install sddm-theme-breeze`) and set `Current=breeze`; check compatibility with `sddm-greeter-qt6 --test-mode --theme /usr/share/sddm/themes/<name>` (look for “module … is not installed” / “Fallback to embedded theme”) |
 | Enrollment registers no touches | finger already on sensor while the driver takes its baseline | lift the finger, restart `fprintd-enroll`, wait for the prompt, then touch |

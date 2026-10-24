@@ -113,6 +113,7 @@ sudo cp ../pam/kde /etc/pam.d/kde
 sudo cp ../pam/kde-fingerprint /etc/pam.d/kde-fingerprint
 # SDDM as display manager (skip if the machine uses gdm3/lightdm):
 sudo cp ../pam/sddm /etc/pam.d/sddm
+sudo cp ../pam/sddm-fingerprint /etc/pam.d/sddm-fingerprint
 ```
 
 Rules (distro-adapt as needed, keep the semantics):
@@ -128,11 +129,15 @@ Rules (distro-adapt as needed, keep the semantics):
    `/etc/pam.d` override them. Verify with:
    `grep -n pam_fprintd /etc/pam.d/kde` → no match;
    `grep -n pam_fprintd /etc/pam.d/kde-fingerprint` → exactly one auth line.
-4. If SDDM is the display manager, install `pam/sddm` too: it inlines
-   common-auth with `pam_fprintd.so max_tries=3 timeout=30` and REMOVES the
+4. If SDDM is the display manager: `pam/sddm` (password-only stack, NO
+   `pam_fprintd` — the finger is handled by the parallel service, see STEP 5a)
+   and `pam/sddm-fingerprint` (finger-only service for the sddm fork; harmless
+   on stock sddm, which simply never calls it). The stack also REMOVES the
    auth-phase `pam_kwallet5` (it prompts for a password after a successful
    match and the login never completes). Verify:
-   `grep -c '^-auth.*kwallet' /etc/pam.d/sddm` → 0.
+   `grep -c '^-auth.*kwallet' /etc/pam.d/sddm` → 0;
+   `grep -c pam_fprintd /etc/pam.d/sddm` → 0; `grep -c pam_fprintd
+   /etc/pam.d/sddm-fingerprint` → 1.
 5. If `/etc/pam.d/kde` (or `sddm`) already exists (non-stock), diff first; base
    the override on the machine's own stock file, removing only
    fprintd/kwallet5 as per the rules. Back up anything you overwrite
@@ -175,12 +180,38 @@ loginctl lock-session                            # user unlocks by fingerprint a
 
 Gate 7.4 passed if the second lock screen still unlocks by fingerprint.
 
-Gate 7.5 (SDDM login screen, only if SDDM is the display manager): user logs
-out (not reboot), at the SDDM screen types ANY character into the password
-field and presses Enter (breeze does not submit an empty field — without a
-submit no PAM cycle runs and touches go nowhere!), then touches the sensor
-until login. Gate passed if Plasma starts WITHOUT the real password being
-used. Verify in `journalctl -u fprintd --since '-3 min'`: `verify-match`.
+STEP 5a — SDDM PARALLEL FINGERPRINT (optional but recommended; skip if gdm3)
+
+Stock SDDM cannot listen for the fingerprint before the user submits the
+password field (sddm#284/sddm#1473). Build sddm with upstream PR #2176:
+
+```bash
+./scripts/build-sddm-fp.sh          # enables deb-src, patches the distro
+                                     # source, builds sddm_<ver>+fp1_amd64.deb
+sudo apt install ~/sddm-fp-build/sddm_*+fp1_amd64.deb
+sudo apt-mark hold sddm
+sudo cp ../pam/sddm-fingerprint /etc/pam.d/sddm-fingerprint
+sudo reboot
+```
+
+The daemon then polls the fingerprint for the last logged-in user from the
+moment the greeter appears; a password submit stops the polling; a failed
+password restarts it. Rollback: `sudo scripts/sddm-fp-rollback.sh` (or from a
+TTY if boot breaks). Full details in `sddm/README.md`. Do NOT combine with the
+breeze auto-submit theme hack — revert it if present.
+
+Gate 7.5 (SDDM login screen, only if SDDM is the display manager):
+- with the STEP 5a fork: after logout (or reboot) the user just TOUCHES the
+  sensor at the login screen — no keypresses — and Plasma starts. Then log
+  out again, type the password and press Enter — login must be instant.
+  Both parts must pass. In the journal expect
+  `Starting fingerprint auth for last user: <user>` right after the greeter
+  starts, and `verify-match` on the touch.
+- on stock sddm (no fork): user types ANY character + Enter (breeze does not
+  submit an empty field — without a submit no PAM cycle runs and touches go
+  nowhere), then touches the sensor within 30 s. Gate passed if Plasma starts
+  WITHOUT the real password being used. Verify `verify-match` in
+  `journalctl -u fprintd --since '-3 min'`.
 
 ## STEP 8 — CLEANUP
 
@@ -196,7 +227,7 @@ used. Verify in `journalctl -u fprintd --since '-3 min'`: `verify-match`.
 | Lock screen: instant «failed to match» | `pam/kde` override missing pam_fprintd-removal → re-do STEP 5 |
 | Match in fprintd log, screen stays locked | kwallet still in `kde-fingerprint` → re-do STEP 5 |
 | SDDM: match in fprintd log, login never completes | kwallet auth line still in `sddm` stack → re-do STEP 5 (pam/sddm) |
-| SDDM: touches do nothing | finger window opens only after a non-empty field submit (breeze ignores empty submit) | type any character + Enter, then touch ≤30 s |
+| SDDM: touches do nothing | stock sddm starts PAM only on submit (and drops Login during an active auth) | build the STEP 5a fork — or type any character + Enter, then touch ≤30 s |
 | Works after boot/hibernate only | mcu-reset patch not applied/built → re-do STEP 3 |
 | Enroll: no touches registered | finger was on sensor at start → restart enroll, wait for prompt |
 | dmesg `did not claim interface 1 before use` | benign, ignore |
